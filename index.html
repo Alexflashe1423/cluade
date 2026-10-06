@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Neuro Grand Prix</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Saira+Condensed:wght@500;600;700;800&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-mode="train">
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-flag" aria-hidden="true"></div>
+      <div>
+        <h1 class="brand-name">Neuro Grand Prix</h1>
+        <p class="brand-tag">Evolve neural-network drivers. Tune how they learn. Chase the lap record.</p>
+      </div>
+    </div>
+    <nav class="modes" role="tablist" aria-label="Mode">
+      <button role="tab" id="tab-train" data-mode="train" aria-selected="true">Train AI</button>
+      <button role="tab" id="tab-race" data-mode="race" aria-selected="false">Race the AI</button>
+      <button role="tab" id="tab-board" data-mode="board" aria-selected="false">Leaderboard</button>
+    </nav>
+    <div class="transport">
+      <button id="btn-play" class="btn btn-primary" title="Pause or resume (Space)" aria-pressed="false">Pause</button>
+      <button id="btn-skip" class="btn" title="End this generation now and breed the next one (N)">Next gen</button>
+      <button id="btn-reset" class="btn" title="Start over with random brains (R)">Reset</button>
+      <div class="speed" id="speed" role="group" aria-label="Simulation speed"></div>
+    </div>
+  </header>
+
+  <aside class="rail rail-left" aria-label="Circuits and settings">
+    <section class="block">
+      <div class="block-head">
+        <h2 class="block-title">Circuits</h2>
+        <button id="btn-unlock" class="link" type="button">Unlock all</button>
+      </div>
+      <ol class="levels" id="levels"></ol>
+    </section>
+    <section class="block">
+      <div class="block-head"><h2 class="block-title">Learning settings</h2></div>
+      <div class="presets" id="presets"></div>
+      <div id="settings"></div>
+    </section>
+  </aside>
+
+  <main class="stage">
+    <div class="stage-head">
+      <div class="stage-id">
+        <div class="eyebrow" id="lvl-region"></div>
+        <h2 class="stage-title" id="lvl-name"></h2>
+        <p class="stage-blurb" id="lvl-blurb"></p>
+      </div>
+      <div class="targets-wrap">
+        <span class="eyebrow">Medal race times</span>
+        <div class="targets" id="targets"></div>
+      </div>
+    </div>
+
+    <div class="monitor" id="monitor">
+      <canvas id="track" aria-label="Race track with AI cars"></canvas>
+      <div class="hud-tl mono" id="hud-tl"></div>
+      <div class="toast" id="toast" role="status" hidden></div>
+      <div class="countdown" id="countdown" hidden>3</div>
+      <div class="race-overlay" id="race-overlay" hidden>
+        <div class="race-card">
+          <div class="eyebrow">Race the AI</div>
+          <h3 id="race-title">Beat the AI</h3>
+          <p class="race-result" id="race-result" hidden></p>
+          <p class="muted small">Your opponents on the grid</p>
+          <ul class="race-ops" id="race-ops"></ul>
+          <div class="field">
+            <label for="driver-name">Driver name for the leaderboard</label>
+            <input type="text" id="driver-name" value="Player 1" maxlength="24" autocomplete="off">
+          </div>
+          <div class="keys">
+            <span><kbd>↑</kbd><kbd>W</kbd> throttle</span>
+            <span><kbd>↓</kbd><kbd>S</kbd> brake / reverse</span>
+            <span><kbd>←</kbd><kbd>→</kbd> steer</span>
+          </div>
+          <button id="btn-start-race" class="btn btn-primary btn-lg" type="button">Start race</button>
+        </div>
+      </div>
+      <div class="touch" id="touch" hidden>
+        <div class="touch-pair">
+          <button type="button" data-k="left" aria-label="Steer left">◀</button>
+          <button type="button" data-k="right" aria-label="Steer right">▶</button>
+        </div>
+        <div class="touch-pair">
+          <button type="button" data-k="down" aria-label="Brake">▼</button>
+          <button type="button" data-k="up" aria-label="Throttle">▲</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="board" id="board" hidden>
+      <div class="board-tabs" id="board-tabs" role="tablist" aria-label="Circuit"></div>
+      <div class="board-targets" id="board-targets"></div>
+      <div class="table-wrap">
+        <table class="board-table">
+          <thead>
+            <tr><th>Pos</th><th>Driver</th><th>Race time</th><th>Best lap</th><th>Learned in</th><th>Setup</th><th>Date</th></tr>
+          </thead>
+          <tbody id="board-body"></tbody>
+        </table>
+      </div>
+      <div class="board-foot">
+        <p class="muted small">Times are saved in this browser. AI runs post their best race automatically; the purple lap is the fastest on the circuit.</p>
+        <button id="btn-clear-board" class="btn" type="button">Clear this circuit</button>
+      </div>
+    </div>
+
+    <div class="stage-foot">
+      <div class="seg" id="ray-mode" role="group" aria-label="Sensor rays">
+        <span class="seg-label">Rays</span>
+        <button data-v="best" aria-pressed="true">Leader</button>
+        <button data-v="all" aria-pressed="false">All</button>
+        <button data-v="off" aria-pressed="false">Off</button>
+      </div>
+      <label class="switch"><input type="checkbox" id="tog-follow"><span class="switch-ui"></span><span>Follow leader</span></label>
+      <label class="switch"><input type="checkbox" id="tog-dead" checked><span class="switch-ui"></span><span>Show crashed</span></label>
+      <p class="keyhelp muted"><kbd>Space</kbd> pause <kbd>N</kbd> next gen <kbd>F</kbd> follow <kbd>V</kbd> rays <kbd>1</kbd>–<kbd>6</kbd> speed</p>
+    </div>
+  </main>
+
+  <aside class="rail rail-right" aria-label="Telemetry">
+    <section class="block">
+      <div class="stats" id="stats"></div>
+    </section>
+    <section class="block">
+      <div class="block-head"><h2 class="block-title" id="tower-title">Timing tower</h2><span class="muted small">top 10</span></div>
+      <ol class="tower" id="tower"></ol>
+    </section>
+    <section class="block">
+      <div class="block-head">
+        <h2 class="block-title">Learning curve</h2>
+        <span class="legend"><i class="lg-best"></i>best <i class="lg-avg"></i>average</span>
+      </div>
+      <canvas id="chart" class="chart" aria-label="Share of race distance covered per generation"></canvas>
+    </section>
+    <section class="block">
+      <div class="block-head"><h2 class="block-title">Leader's brain</h2><span class="mono muted small" id="net-shape"></span></div>
+      <canvas id="net" class="net" aria-label="Live neural network of the leading car"></canvas>
+      <p class="hint">Gold links push positive, blue negative. Bright nodes are firing right now.</p>
+      <div class="brain-tools">
+        <button id="btn-copy" class="btn" type="button">Copy champion</button>
+        <button id="btn-import" class="btn" type="button">Load a brain</button>
+      </div>
+      <div class="import-box" id="import-box" hidden>
+        <label for="import-text" class="small muted">Paste brain JSON</label>
+        <textarea id="import-text" rows="4" spellcheck="false"></textarea>
+        <button id="btn-load" class="btn btn-primary" type="button">Seed population</button>
+        <p class="small" id="import-msg"></p>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<script src="js/nn.js"></script>
+<script src="js/evolution.js"></script>
+<script src="js/tracks.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/render.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
