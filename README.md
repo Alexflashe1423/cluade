@@ -24,7 +24,7 @@ mutation.
 - **Leaderboard**: best race times per circuit for AI runs and human drivers,
   with gold, silver and bronze targets. Saved in the browser.
 
-### Six circuits
+### Eight circuits
 
 | Round | Circuit | Challenge |
 | --- | --- | --- |
@@ -34,14 +34,42 @@ mutation.
 | 4 | Neon Docklands | Square street corners, obstacles |
 | 5 | Glacier Ring | Ice (32% grip) and tyre stacks |
 | 6 | Caldera Loop | Narrow, technical, obstacles |
+| 7 | ??? | A mystery circuit. Its name, layout and medal times stay hidden until someone finishes it |
+| 8 | Whispering Pines | A long forest serpentine with a hidden shortcut |
 
 A circuit unlocks once any car (AI or you) finishes the previous one.
+
+**The mystery circuit** is one long lap on a map 1.5× bigger than the others.
+It mixes surfaces: boost pads, sheet ice, a sand trap, a figure-8 crossover, a
+narrow section inside a fog bank that cuts sensor range to 35%, and a tyre
+slalom. Turn on *Follow leader* to watch up close.
+
+**Whispering Pines** hides a dirt path under the trees that skips about 40% of
+the lap. Nothing tells the AI it exists, so it only finds it by accident. The
+stats panel reports the generation it was first used and how many cars use it.
+In testing, populations found it somewhere between generations 28 and 66, but
+didn't always keep using it. The gold medal time is only reachable through the
+woods.
+
+### Surfaces
+
+| Surface | Effect |
+| --- | --- |
+| Ice | Very little grip, weak acceleration |
+| Sand | Speed capped at 50%, heavy drag |
+| Boost | Faster acceleration, speed cap raised to 145% |
+| Fog | Sensor rays reach only 35% as far |
+| Dirt | Slightly slower, less grip |
+
+Turn on **Surface sensor** (Sensors settings) to feed the network the grip of
+the ground under it, then compare how quickly it learns the mystery circuit
+with and without it.
 
 ### Settings to experiment with
 
 - **Neural network**: hidden layer sizes, activation function (tanh, ReLU,
   Leaky ReLU, sigmoid), whether speed is an input.
-- **Sensors**: ray count, field of view, ray length.
+- **Sensors**: ray count, field of view, ray length, optional surface sensor.
 - **Evolution**: population size, parent selection (tournament, roulette, rank,
   truncation), tournament size, crossover (uniform, single point, blend, none),
   mutation rate and strength, elites, random immigrants.

@@ -464,6 +464,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .stat-value small { font-size: 14px; color: var(--muted); font-weight: 600; }
 .stat.mono .stat-value { font-family: var(--font-data); font-size: 17px; font-weight: 500; padding-top: 4px; }
 .stat.purple .stat-value { color: var(--purple); }
+.stat.wide { grid-column: 1 / -1; }
+.secret-stat .stat-value { font-family: var(--font-body); font-size: 13.5px; font-weight: 600; white-space: normal; color: var(--green); padding-top: 2px; }
+.tw-name small.secret { color: var(--green); }
+.kind-secret { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
 
 .tower { list-style: none; margin: 0; padding: 0; border-radius: var(--r); overflow: hidden; border: 1px solid var(--line); }
 .tw {

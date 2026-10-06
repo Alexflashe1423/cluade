@@ -4,7 +4,7 @@
   const NGP = (root.NGP = root.NGP || {});
 
   const DEFAULTS = {
-    hidden: '8,6', activation: 'tanh', speedInput: true,
+    hidden: '8,6', activation: 'tanh', speedInput: true, surfaceInput: false,
     rays: 7, raySpread: 180, rayLength: 220,
     population: 80, selection: 'tournament', tournamentK: 3, crossover: 'uniform',
     mutationRate: 0.1, mutationStrength: 0.5, elites: 4, immigrants: 0.05,
@@ -16,7 +16,7 @@
   const CAR_HALF_L = 11, CAR_HALF_W = 5.5;
 
   function sensorMeta(cfg) {
-    return { rays: cfg.rays, raySpread: cfg.raySpread, rayLength: cfg.rayLength, speedInput: cfg.speedInput };
+    return { rays: cfg.rays, raySpread: cfg.raySpread, rayLength: cfg.rayLength, speedInput: cfg.speedInput, surfaceInput: !!cfg.surfaceInput };
   }
 
   function sensorAngles(meta) {
@@ -29,7 +29,7 @@
 
   function layerSizes(cfg) {
     const hidden = String(cfg.hidden).split(',').map((s) => parseInt(s, 10)).filter((n) => n > 0);
-    return [cfg.rays + (cfg.speedInput ? 1 : 0), ...hidden, 2];
+    return [cfg.rays + (cfg.speedInput ? 1 : 0) + (cfg.surfaceInput ? 1 : 0), ...hidden, 2];
   }
 
   function onTrack(track, x, y) {
@@ -68,7 +68,9 @@
       this.x = track.start.x; this.y = track.start.y; this.angle = track.start.angle;
       this.vx = 0; this.vy = 0; this.fwd = 0; this.speed = 0;
       this.alive = true; this.crashed = false; this.finished = false;
-      this.idx = 0; this.progress = 0; this.maxProgress = 0; this.laps = 0;
+      this.idx = 0; this.pos = 0; this.branch = -1; this.bIdx = 0; this.surf = track.surf[0];
+      this.onSecret = false; this.usedSecret = false; this.secretUses = 0;
+      this.progress = 0; this.maxProgress = 0; this.laps = 0;
       this.t = 0; this.lapStart = 0; this.lapTimes = []; this.bestLap = Infinity; this.finishTime = Infinity;
       this.stall = 0; this.speedSum = 0; this.steps = 0;
       this.steer = 0; this.throttle = 0; this.fitness = 0;
@@ -90,13 +92,17 @@
     const ca = Math.cos(car.angle), sa = Math.sin(car.angle);
     let fwd = car.vx * ca + car.vy * sa;
     let lx = car.vx - ca * fwd, ly = car.vy - sa * fwd;
-    if (throttle >= 0) fwd += throttle * cfg.accel * dt;
+    const sf = NGP.SURFACES[car.surf || 0];
+    if (throttle >= 0) fwd += throttle * cfg.accel * sf.accel * dt;
     else fwd += throttle * cfg.accel * 1.8 * dt;
-    fwd -= fwd * 0.35 * dt;
+    fwd -= fwd * (0.35 + sf.drag) * dt;
     const minFwd = allowReverse ? -cfg.maxSpeed * 0.3 : 0;
     if (fwd < minFwd) fwd = minFwd;
-    if (fwd > cfg.maxSpeed) fwd = cfg.maxSpeed;
-    const k = Math.exp(-track.grip * cfg.grip * 10 * dt);
+    const cap = cfg.maxSpeed * sf.cap;
+    // Over the surface's limit (e.g. hitting sand) the car bleeds speed quickly
+    // rather than stopping dead.
+    if (fwd > cap) fwd = Math.max(cap, fwd - (fwd - cap) * 4 * dt - 40 * dt);
+    const k = Math.exp(-track.grip * sf.grip * cfg.grip * 10 * dt);
     lx *= k; ly *= k;
     car.vx = ca * fwd + lx; car.vy = sa * fwd + ly;
     car.x += car.vx * dt; car.y += car.vy * dt;
@@ -107,31 +113,92 @@
 
   function think(car, track, cfg) {
     const meta = car.brain.meta;
+    const sf = NGP.SURFACES[car.surf || 0];
+    const reach = meta.rayLength * sf.sight;
     for (let i = 0; i < car.angles.length; i++) {
-      car.sensors[i] = castRay(track, car.x, car.y, car.angle + car.angles[i], meta.rayLength) / meta.rayLength;
+      car.sensors[i] = castRay(track, car.x, car.y, car.angle + car.angles[i], reach) / meta.rayLength;
     }
     car.input.set(car.sensors);
-    if (meta.speedInput) car.input[meta.rays] = car.fwd / cfg.maxSpeed;
+    let k = meta.rays;
+    if (meta.speedInput) car.input[k++] = car.fwd / cfg.maxSpeed;
+    if (meta.surfaceInput) car.input[k++] = sf.traction;
     const out = car.brain.forward(car.input);
     const throttle = Math.max(-1, Math.min(1, out[1] + 0.25));
     return [out[0], throttle];
   }
 
   // Track progress by locking onto the nearest centreline sample ahead.
+  // Secret paths: a car that drifts closer to a side path than to the main
+  // road follows that path instead, and its progress is interpolated across
+  // the stretch of main road the path skips.
+  function locate(car, track) {
+    const N = track.N, xs = track.xs, ys = track.ys;
+    const d2 = (x, y) => (x - car.x) * (x - car.x) + (y - car.y) * (y - car.y);
+    if (car.branch < 0) {
+      let best = car.idx, bestD = Infinity;
+      for (let k = -4; k <= 12; k++) {
+        const j = (car.idx + k + N) % N;
+        const d = d2(xs[j], ys[j]);
+        if (d < bestD) { bestD = d; best = j; }
+      }
+      let br = -1, bk = 0;
+      const halfW = track.ws[best] / 2 - 2;
+      const offRoad = bestD > halfW * halfW;
+      for (let bi = 0; offRoad && bi < track.branches.length; bi++) {
+        const B = track.branches[bi];
+        let off = (car.idx - B.a + N) % N;
+        if (off > N / 2) off -= N;
+        if (off < -12 || off > 10) continue;
+        for (let k = 2; k < Math.min(16, B.n); k++) {
+          const d = d2(B.xs[k], B.ys[k]);
+          if (d < bestD) { bestD = d; br = bi; bk = k; }
+        }
+      }
+      if (br >= 0) {
+        car.branch = br; car.bIdx = bk; car.onSecret = true;
+        const B = track.branches[br];
+        car.surf = B.surface;
+        return B.a + (bk / (B.n - 1)) * B.span;
+      }
+      car.idx = best;
+      car.surf = track.surf[best];
+      return best;
+    }
+    const B = track.branches[car.branch];
+    let best = car.bIdx, bestD = Infinity;
+    for (let k = Math.max(0, car.bIdx - 4); k <= Math.min(B.n - 1, car.bIdx + 12); k++) {
+      const d = d2(B.xs[k], B.ys[k]);
+      if (d < bestD) { bestD = d; best = k; }
+    }
+    // Rejoin the main road at the far end, or back out near the entrance.
+    const ends = [];
+    if (best >= B.n - 16) ends.push([B.b, -4, 12, true]);
+    if (best <= 12) ends.push([B.a, -6, 6, false]);
+    for (const [base, lo, hi, finished] of ends) {
+      let mj = -1, md = bestD;
+      for (let k = lo; k <= hi; k++) {
+        const j = (base + k + N) % N;
+        const d = d2(xs[j], ys[j]);
+        if (d < md) { md = d; mj = j; }
+      }
+      if (mj >= 0) {
+        car.branch = -1; car.onSecret = false; car.idx = mj; car.surf = track.surf[mj];
+        if (finished) { car.usedSecret = true; car.secretUses++; }
+        return mj;
+      }
+    }
+    car.bIdx = best;
+    return B.a + (best / (B.n - 1)) * B.span;
+  }
+
   // Returns 'lap', 'finish', 'wrongway' or null.
   function advance(car, track, dt) {
     const N = track.N;
-    let best = car.idx, bestD = Infinity;
-    for (let k = -4; k <= 12; k++) {
-      const j = (car.idx + k + N) % N;
-      const dx = track.xs[j] - car.x, dy = track.ys[j] - car.y;
-      const d = dx * dx + dy * dy;
-      if (d < bestD) { bestD = d; best = j; }
-    }
-    let delta = best - car.idx;
+    const pos = locate(car, track);
+    let delta = pos - car.pos;
     if (delta > N / 2) delta -= N;
     if (delta < -N / 2) delta += N;
-    car.idx = best;
+    car.pos = pos;
     car.progress += delta;
     car.t += dt;
     if (car.progress > car.maxProgress) {
@@ -175,6 +242,7 @@
       this.champion = null; // { brain, raceTime, bestLap, fitness, gen }
       this.fastestLap = Infinity;
       this.firstClearGen = null;
+      this.secretFoundGen = null;
       this.populate(brains);
     }
 
@@ -212,8 +280,12 @@
       }
       this.alive = alive;
       this.time += dt;
-      if (alive === 0 || this.time >= cfg.genTime) return this.endGeneration();
+      if (alive === 0 || this.time >= this.timeLimit()) return this.endGeneration();
       return null;
+    }
+
+    timeLimit() {
+      return Math.max(this.cfg.genTime, this.track.level.minGenTime || 0);
     }
 
     leader() {
@@ -230,7 +302,7 @@
 
     endGeneration() {
       const track = this.track, cfg = this.cfg, total = track.N * track.laps;
-      let sum = 0, sumProg = 0, bestProg = 0, finishers = 0, genRace = Infinity, genLap = Infinity;
+      let sum = 0, sumProg = 0, bestProg = 0, finishers = 0, genRace = Infinity, genLap = Infinity, secretUsers = 0;
       const ranked = this.cars.map((c) => {
         c.fitness = fitness(c, track, cfg);
         sum += c.fitness;
@@ -239,6 +311,7 @@
         if (prog > bestProg) bestProg = prog;
         if (c.finished) { finishers++; genRace = Math.min(genRace, c.finishTime); }
         genLap = Math.min(genLap, c.bestLap);
+        if (c.usedSecret) secretUsers++;
         return { brain: c.brain, fitness: c.fitness, car: c };
       });
       ranked.sort((a, b) => b.fitness - a.fitness);
@@ -248,13 +321,15 @@
       const prev = this.champion;
       let newRecord = false;
       if (fastest && (!prev || !isFinite(prev.raceTime) || fastest.car.finishTime < prev.raceTime)) {
-        this.champion = { brain: fastest.brain.clone(), raceTime: fastest.car.finishTime, bestLap: fastest.car.bestLap, fitness: fastest.fitness, gen: this.gen };
+        this.champion = { brain: fastest.brain.clone(), raceTime: fastest.car.finishTime, bestLap: fastest.car.bestLap, fitness: fastest.fitness, gen: this.gen, usedSecret: fastest.car.usedSecret };
         newRecord = true;
       } else if (!fastest && (!prev || (!isFinite(prev.raceTime) && top.fitness > prev.fitness))) {
         this.champion = { brain: top.brain.clone(), raceTime: Infinity, bestLap: top.car.bestLap, fitness: top.fitness, gen: this.gen };
       }
       if (genLap < this.fastestLap) this.fastestLap = genLap;
       const cleared = finishers > 0 && this.firstClearGen === null;
+      const secretFound = secretUsers > 0 && this.secretFoundGen === null;
+      if (secretFound) this.secretFoundGen = this.gen;
       if (cleared) this.firstClearGen = this.gen;
 
       const stats = {
@@ -263,7 +338,8 @@
         avg: sum / ranked.length,
         bestProg, avgProg: sumProg / ranked.length,
         finishers, raceTime: genRace, bestLap: genLap,
-        newRecord, cleared,
+        newRecord, cleared, secretUsers, secretFound,
+        championUsedSecret: newRecord && fastest.car.usedSecret,
       };
       this.history.push(stats);
       if (this.history.length > 400) this.history.shift();
@@ -364,6 +440,7 @@
   NGP.Car = Car;
   NGP.Trainer = Trainer;
   NGP.Race = Race;
+  NGP.advance = advance;
   NGP.layerSizes = layerSizes;
   NGP.sensorMeta = sensorMeta;
   NGP.sensorAngles = sensorAngles;

@@ -3,7 +3,6 @@
   const NGP = window.NGP;
   const $ = (id) => document.getElementById(id);
   const STORE_KEY = 'neuro-gp.v1';
-  const WORLD = NGP.WORLD;
 
   // ---------- persistence ----------
   let store = {};
@@ -12,6 +11,7 @@
   store.champions = store.champions || {};
   store.unlocked = Number.isInteger(store.unlocked) ? store.unlocked : 0;
   store.runCounter = store.runCounter || 0;
+  store.revealed = store.revealed || {};
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (e) { /* storage unavailable */ }
   }
@@ -31,6 +31,7 @@
     },
     {
       group: 'Sensors', items: [
+        { key: 'surfaceInput', label: 'Surface sensor', type: 'toggle', hint: 'Tells the network how grippy the ground under it is (ice, sand, boost). Changing this restarts training.' },
         { key: 'rays', label: 'Ray count', type: 'range', min: 1, max: 15, step: 1, restart: true, hint: 'Distance sensors pointing out from the nose. Changing this restarts training.' },
         { key: 'raySpread', label: 'Field of view', type: 'range', min: 30, max: 300, step: 10, fmt: (v) => v + '°' },
         { key: 'rayLength', label: 'Ray length', type: 'range', min: 60, max: 400, step: 10, fmt: (v) => v + ' px', hint: 'How far ahead the car can see.' },
@@ -69,7 +70,7 @@
       ],
     },
   ];
-  const RESTART_KEYS = new Set(['hidden', 'activation', 'speedInput', 'rays']);
+  const RESTART_KEYS = new Set(['hidden', 'activation', 'speedInput', 'surfaceInput', 'rays']);
 
   const PRESETS = [
     { name: 'Balanced', desc: 'The defaults', values: Object.assign({}, NGP.DEFAULTS) },
@@ -96,9 +97,34 @@
   let trainer = null, race = null;
   const input = { up: false, down: false, left: false, right: false };
 
+  const overlays = {};
   const level = () => NGP.LEVELS[state.level];
   const track = () => tracks[state.level];
   const bg = () => backgrounds[state.level] || (backgrounds[state.level] = NGP.paintTrack(track()));
+  const overlay = () => (state.level in overlays ? overlays[state.level] : (overlays[state.level] = NGP.paintOverlay(track())));
+
+  // Mystery circuits keep their identity hidden until someone finishes them.
+  const isHidden = (lvl) => !!lvl.mystery && !store.revealed[lvl.id];
+  const shown = (lvl) => (lvl.mystery && !isHidden(lvl) ? Object.assign({}, lvl, lvl.mystery) : lvl);
+  // Called when an AI or a human finishes the current circuit.
+  function clearLevel(msg) {
+    const lvl = level();
+    let text = msg;
+    const wasHidden = isHidden(lvl);
+    if (wasHidden) {
+      store.revealed[lvl.id] = true;
+      text = `Mystery circuit revealed: ${lvl.mystery.name}.`;
+      renderStageHead();
+    }
+    const next = state.level + 1;
+    if (next < NGP.LEVELS.length && store.unlocked < next) {
+      store.unlocked = next;
+      text += ` ${shown(NGP.LEVELS[next]).name} unlocked.`;
+    }
+    save();
+    renderLevels();
+    toast(text, wasHidden ? 'record' : 'good');
+  }
 
   function fmt(t) {
     if (!isFinite(t)) return '—';
@@ -142,21 +168,15 @@
   function onGeneration(stats) {
     const lvl = level();
     NGP.drawChart($('chart'), trainer.history);
-    if (stats.cleared) {
-      const next = state.level + 1;
-      if (next < NGP.LEVELS.length && store.unlocked < next) {
-        store.unlocked = next;
-        toast(`Circuit cleared in generation ${stats.gen}. ${NGP.LEVELS[next].name} unlocked.`, 'good');
-        renderLevels();
-      } else {
-        toast(`Circuit cleared in generation ${stats.gen}.`, 'good');
-      }
+    if (stats.cleared) clearLevel(`Circuit cleared in generation ${stats.gen}.`);
+    if (stats.secretFound) {
+      toast(`Generation ${stats.gen}: a car found a secret path and took it all the way through.`, 'record');
     }
     if (stats.newRecord) {
       const ch = trainer.champion;
       const entryId = `run${state.runId}-${lvl.id}`;
       const existing = store.board.find((e) => e.id === entryId);
-      const entry = { id: entryId, level: lvl.id, kind: 'AI', name: `AI run ${state.runId}`, race: ch.raceTime, lap: ch.bestLap, gen: ch.gen, setup: setupString(), at: Date.now() };
+      const entry = { id: entryId, level: lvl.id, kind: 'AI', name: `AI run ${state.runId}`, race: ch.raceTime, lap: ch.bestLap, gen: ch.gen, setup: setupString(), secret: !!stats.championUsedSecret, at: Date.now() };
       if (existing) Object.assign(existing, entry); else store.board.push(entry);
       const saved = store.champions[lvl.id];
       if (!saved || ch.raceTime < saved.raceTime) {
@@ -196,7 +216,7 @@
     if (saved) {
       try {
         const b = NGP.Brain.fromJSON(saved.brain);
-        if (b.meta && b.sizes[0] === b.meta.rays + (b.meta.speedInput ? 1 : 0)) ops.push({ brain: b, label: 'Champion', note: fmt(saved.raceTime) });
+        if (b.meta && b.sizes[0] === b.meta.rays + (b.meta.speedInput ? 1 : 0) + (b.meta.surfaceInput ? 1 : 0)) ops.push({ brain: b, label: 'Champion', note: fmt(saved.raceTime) });
       } catch (e) { /* ignore corrupt brain */ }
     }
     const ch = trainer && trainer.champion;
@@ -213,7 +233,7 @@
     $('race-ops').innerHTML = ops.length
       ? ops.map((o) => `<li><span class="chip" style="--h:${Math.round(o.brain.hue)}"></span><span>${esc(o.label)}</span><span class="mono muted">${esc(o.note)}</span></li>`).join('')
       : '<li class="muted">No trained AI yet. You will drive solo.</li>';
-    $('race-title').textContent = `Beat the AI at ${level().name}`;
+    $('race-title').textContent = `Beat the AI at ${shown(level()).name}`;
     $('race-result').hidden = !result;
     if (result) $('race-result').innerHTML = result;
     $('btn-start-race').textContent = result ? 'Race again' : 'Start race';
@@ -238,12 +258,9 @@
     const pos = race.position();
     const name = ($('driver-name').value || 'Player').trim().slice(0, 24) || 'Player';
     const medal = medalFor(lvl, p.finishTime);
-    store.board.push({ id: 'h' + Date.now(), level: lvl.id, kind: 'Human', name, race: p.finishTime, lap: p.bestLap, gen: null, setup: `${p.bumps || 0} wall hits`, at: Date.now() });
-    if (store.unlocked < state.level + 1 && state.level + 1 < NGP.LEVELS.length) {
-      store.unlocked = state.level + 1;
-      renderLevels();
-    }
+    store.board.push({ id: 'h' + Date.now(), level: lvl.id, kind: 'Human', name, race: p.finishTime, lap: p.bestLap, gen: null, setup: `${p.bumps || 0} wall hits`, secret: p.usedSecret, at: Date.now() });
     save();
+    clearLevel('You finished the race.');
     const medalTxt = medal ? `<span class="medal-dot" data-medal="${medal}"></span>${medal[0].toUpperCase() + medal.slice(1)}` : 'No medal';
     showRaceIntro(`<strong>P${pos}</strong> · ${fmt(p.finishTime)} · best lap ${fmt(p.bestLap)} · ${medalTxt}`);
     renderLevels();
@@ -259,6 +276,7 @@
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.fillStyle = getComputedStyle(document.body).backgroundColor;
     g.fillRect(0, 0, w, h);
+    const WORLD = track();
     const fit = Math.min(w / WORLD.W, h / WORLD.H);
     let scale = fit, ox = (w - WORLD.W * fit) / 2, oy = (h - WORLD.H * fit) / 2;
 
@@ -284,6 +302,7 @@
     if (racing) {
       for (const c of race.ai) NGP.drawCar(g, c, `hsl(${c.hue} 80% 60%)`, c.alive || c.finished ? 1 : 0.35, null);
       NGP.drawCar(g, race.player, '#f4f6f5', 1, accent);
+      if (overlay()) g.drawImage(overlay(), 0, 0);
       return;
     }
     if (!trainer) return;
@@ -307,6 +326,19 @@
       if (state.rays !== 'off' && leader.alive) NGP.drawRays(g, leader, accent);
       NGP.drawCar(g, leader, accent, 1, accent);
     }
+    const ov = overlay();
+    if (ov) {
+      g.drawImage(ov, 0, 0);
+      // Keep the leader trackable when it disappears under fog or trees.
+      if (leader && leader.alive) {
+        g.save();
+        g.strokeStyle = accent;
+        g.lineWidth = 2;
+        g.setLineDash([4, 4]);
+        g.beginPath(); g.arc(leader.x, leader.y, 18, 0, Math.PI * 2); g.stroke();
+        g.restore();
+      }
+    }
   }
 
   const varCache = {};
@@ -321,6 +353,7 @@
       return (d > 0 ? '+' : '') + d + '°';
     });
     if (brain.meta.speedInput) labels.push('SPD');
+    if (brain.meta.surfaceInput) labels.push('SURF');
     return labels;
   }
 
@@ -333,7 +366,7 @@
   }
 
   function towerRow(pos, car, val, flags) {
-    return `<li class="tw ${flags}"><span class="tw-pos">${pos}</span><span class="chip" style="--h:${Math.round(car.hue)}"></span><span class="tw-name">${esc(car.label || '#' + car.id)}${car.brain && car.brain.elite ? '<small>elite</small>' : ''}</span><span class="tw-val">${val}</span></li>`;
+    return `<li class="tw ${flags}"><span class="tw-pos">${pos}</span><span class="chip" style="--h:${Math.round(car.hue)}"></span><span class="tw-name">${esc(car.label || '#' + car.id)}${car.usedSecret || car.onSecret ? '<small class="secret">secret</small>' : car.brain && car.brain.elite ? '<small>elite</small>' : ''}</span><span class="tw-val">${val}</span></li>`;
   }
 
   function updateHud() {
@@ -365,11 +398,26 @@
       statCell('Generation', trainer.gen) +
       statCell('Running', `${trainer.alive}<small>/${trainer.cars.length}</small>`) +
       statCell('Best race', (medal ? `<span class="medal-dot" data-medal="${medal}"></span>` : '') + fmt(ch ? ch.raceTime : Infinity), 'mono') +
-      statCell('Fastest lap', fmt(trainer.fastestLap), 'mono purple');
+      statCell('Fastest lap', fmt(trainer.fastestLap), 'mono purple') +
+      secretCell();
     const st = trainer.standings().slice(0, 10);
     $('tower').innerHTML = st.map((c, i) => towerRow(i + 1, c, carStatus(c, lvl), (i === 0 ? 'lead ' : '') + statusClass(c))).join('');
     const sp = SPEEDS[state.speed][1];
-    $('hud-tl').textContent = `GEN ${trainer.gen} · ${fmt(trainer.time)} / ${cfg.genTime}s · ${state.running ? sp : 'PAUSED'}`;
+    $('hud-tl').textContent = `GEN ${trainer.gen} · ${fmt(trainer.time)} / ${trainer.timeLimit()}s · ${state.running ? sp : 'PAUSED'}`;
+  }
+
+  function secretCell() {
+    if (!trainer || !track().branches.length) return '';
+    const last = trainer.history[trainer.history.length - 1];
+    const now = trainer.cars.filter((c) => c.usedSecret || c.onSecret).length;
+    let value;
+    if (trainer.secretFoundGen === null) {
+      value = now ? `${now} car${now > 1 ? 's' : ''} exploring it now` : 'Not found yet';
+    } else {
+      value = `Found in gen ${trainer.secretFoundGen} · ${last ? last.secretUsers : 0}/${trainer.cars.length} used it last gen`;
+      if (trainer.champion && trainer.champion.usedSecret) value += ' · champion takes it';
+    }
+    return `<div class="stat wide secret-stat"><span class="stat-label">Secret path</span><span class="stat-value">${value}</span></div>`;
   }
 
   function rank(c) {
@@ -398,39 +446,47 @@
       const locked = i > store.unlocked;
       const best = bestEntry(l.id);
       const medal = best ? medalFor(l, best.race) : null;
+      const v = shown(l);
       return `<li><button class="level${i === state.level ? ' active' : ''}" data-i="${i}" ${locked ? 'disabled aria-disabled="true"' : ''} aria-pressed="${i === state.level}">
         <canvas class="thumb" width="112" height="70" data-color="${NGP.BIOMES[l.biome].kerb[0]}"></canvas>
-        <span class="level-text"><span class="level-name">${esc(l.name)}</span><span class="level-meta">R${i + 1} · ${esc(l.region)} · ${best ? fmt(best.race) : locked ? 'Locked' : 'No finish yet'}</span></span>
+        <span class="level-text"><span class="level-name">${esc(v.name)}</span><span class="level-meta">R${i + 1} · ${esc(v.region)} · ${best ? fmt(best.race) : locked ? 'Locked' : 'No finish yet'}</span></span>
         ${locked ? '<svg class="lock" viewBox="0 0 16 16" aria-label="Locked"><path d="M4 7V5a4 4 0 1 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 1 0-4 0v2z"/></svg>' : medal ? `<span class="medal-dot lg" data-medal="${medal}" title="${medal} medal"></span>` : ''}
       </button></li>`;
     }).join('');
-    ul.querySelectorAll('canvas.thumb').forEach((c, i) => NGP.paintThumb(c, NGP.LEVELS[i]));
+    ul.querySelectorAll('canvas.thumb').forEach((c, i) => NGP.paintThumb(c, NGP.LEVELS[i], isHidden(NGP.LEVELS[i])));
     $('btn-unlock').hidden = store.unlocked >= NGP.LEVELS.length - 1;
   }
 
+  function targetsHtml(lvl) {
+    const hide = isHidden(lvl);
+    return lvl.medals.map((t, i) => `<span class="target"><span class="medal-dot" data-medal="${MEDAL_NAMES[i]}"></span><span class="mono">${hide ? '?:??.???' : fmt(t)}</span></span>`).join('');
+  }
+
   function renderStageHead() {
-    const l = level();
-    $('lvl-region').textContent = `Round ${state.level + 1} · ${l.region} · ${l.laps} laps · grip ${Math.round(l.grip * 100)}%`;
+    const l = shown(level()), t = track();
+    const extras = [];
+    if (t.W > 1600) extras.push('big map, try Follow leader');
+    $('lvl-region').textContent = `Round ${state.level + 1} · ${l.region} · ${l.laps} ${l.laps === 1 ? 'lap' : 'laps'} · grip ${Math.round(l.grip * 100)}%${extras.length ? ' · ' + extras.join(' · ') : ''}`;
     $('lvl-name').textContent = l.name;
     $('lvl-blurb').textContent = l.blurb;
-    $('targets').innerHTML = l.medals.map((t, i) => `<span class="target"><span class="medal-dot" data-medal="${MEDAL_NAMES[i]}"></span><span class="mono">${fmt(t)}</span></span>`).join('');
+    $('targets').innerHTML = targetsHtml(level());
   }
 
   // ---------- leaderboard ----------
   function renderBoard() {
     const lvl = NGP.LEVELS[state.boardLevel];
-    $('board-tabs').innerHTML = NGP.LEVELS.map((l, i) => `<button role="tab" class="board-tab" data-i="${i}" aria-selected="${i === state.boardLevel}">${esc(l.name)}</button>`).join('');
+    $('board-tabs').innerHTML = NGP.LEVELS.map((l, i) => `<button role="tab" class="board-tab" data-i="${i}" aria-selected="${i === state.boardLevel}">${esc(shown(l).name)}</button>`).join('');
     const rows = store.board.filter((e) => e.level === lvl.id).sort((a, b) => a.race - b.race).slice(0, 15);
     const fastestLap = Math.min(...rows.map((r) => r.lap));
-    $('board-targets').innerHTML = `<span class="muted">Medal targets for ${l2(lvl)}:</span> ` + lvl.medals.map((t, i) => `<span class="target"><span class="medal-dot" data-medal="${MEDAL_NAMES[i]}"></span><span class="mono">${fmt(t)}</span></span>`).join('');
+    $('board-targets').innerHTML = `<span class="muted">Medal targets for ${l2(lvl)}:</span> ` + targetsHtml(lvl);
     if (!rows.length) {
-      $('board-body').innerHTML = `<tr><td colspan="7" class="empty">No finishes on ${esc(lvl.name)} yet. Train an AI until one car completes ${lvl.laps} laps, or race it yourself.</td></tr>`;
+      $('board-body').innerHTML = `<tr><td colspan="7" class="empty">No finishes on ${esc(shown(lvl).name)} yet. Train an AI until one car completes ${lvl.laps === 1 ? 'the lap' : lvl.laps + ' laps'}, or race it yourself.</td></tr>`;
     } else {
       $('board-body').innerHTML = rows.map((r, i) => {
         const medal = medalFor(lvl, r.race);
         return `<tr class="row">
           <td class="pos">${i + 1}</td>
-          <td><span class="who">${esc(r.name)}</span> <span class="kind kind-${r.kind === 'AI' ? 'ai' : 'human'}">${r.kind === 'AI' ? 'AI' : 'Human'}</span></td>
+          <td><span class="who">${esc(r.name)}</span> <span class="kind kind-${r.kind === 'AI' ? 'ai' : 'human'}">${r.kind === 'AI' ? 'AI' : 'Human'}</span>${r.secret ? ' <span class="kind kind-secret" title="Took the secret path">Secret</span>' : ''}</td>
           <td class="mono">${medal ? `<span class="medal-dot" data-medal="${medal}"></span>` : ''}${fmt(r.race)}</td>
           <td class="mono${r.lap === fastestLap ? ' purple' : ''}">${fmt(r.lap)}</td>
           <td class="mono">${r.gen ? 'gen ' + r.gen : '—'}</td>
@@ -439,10 +495,10 @@
         </tr>`;
       }).join('');
     }
-    $('btn-clear-board').textContent = state.confirmClear ? `Confirm: delete all ${lvl.name} times` : 'Clear this circuit';
+    $('btn-clear-board').textContent = state.confirmClear ? `Confirm: delete all ${shown(lvl).name} times` : 'Clear this circuit';
     $('btn-clear-board').classList.toggle('danger', state.confirmClear);
   }
-  const l2 = (lvl) => esc(lvl.name);
+  const l2 = (lvl) => esc(shown(lvl).name);
 
   // ---------- settings UI ----------
   function fmtValue(item, v) {
@@ -635,7 +691,7 @@
       const b = NGP.Brain.fromJSON(JSON.parse($('import-text').value));
       if (!b.meta) throw new Error('This brain has no sensor settings');
       const hidden = b.sizes.slice(1, -1).join(',');
-      Object.assign(cfg, { hidden, activation: b.activation, rays: b.meta.rays, raySpread: b.meta.raySpread, rayLength: b.meta.rayLength, speedInput: b.meta.speedInput });
+      Object.assign(cfg, { hidden, activation: b.activation, rays: b.meta.rays, raySpread: b.meta.raySpread, rayLength: b.meta.rayLength, speedInput: b.meta.speedInput, surfaceInput: !!b.meta.surfaceInput });
       if (!findItem('hidden').options.some(([v]) => v === hidden)) findItem('hidden').options.push([hidden, hidden.replace(/,/g, ' → ')]);
       store.cfg = cfg;
       save();
